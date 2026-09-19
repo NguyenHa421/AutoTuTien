@@ -9,6 +9,7 @@
 5. Vào `chrome://settings/performance`
 6. Tại mục **Always keep these sites active**, chọn Add, thêm **discord.com**
 7. Mở lại tab Discord (**F5**)
+8. Bảng auto hiện ra, tắt chế độ **Thử, chỉ bấm ghi log**
 
 ## Bốn chế độ
 
