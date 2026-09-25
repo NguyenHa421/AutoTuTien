@@ -1,6 +1,6 @@
 // Sinh tự động từ userscript/autogame-farm.user.js — ĐỪNG SỬA TRỰC TIẾP.
 // Sửa file nguồn rồi chạy:  node build-extension.js
-// Phiên bản: 1.8.2
+// Phiên bản: 1.8.3
 
 /*
  * Vì sao không cần chuột: nút trong Discord web là thẻ <button> thật.
@@ -480,6 +480,7 @@
     aoeDone: {},              // trong lượt AOE này đã bấm tưới/bón chưa (đặt lại khi bắt sâu lại)
     walkDone: {},             // lúc đi từng ô của vườn này có tưới/bón ô nào không
     pestWalks: 0,             // số lần vào ra vườn (bắt sâu tay) trong một lần chăm vườn
+    plotRefresh: false, plotFails: 0,   // tưới/bón trong ô thất bại -> làm mới rồi thử lại
     sowing: false, sowed: false, sowFail: false, gWaits: 0, selTries: 0, sawTable: false,
     roundWork: 0, idleUntil: 0,
     rounds: 0, plots: 0, clicks: 0,
@@ -513,6 +514,7 @@
     S.stopReason = reason;
     S.running = false; S.paused = false;
     markRunning(false);
+    letTabSleep();
     log(`🎯 ${reason} — dừng`, 'ok');
     paint();
   }
@@ -537,8 +539,16 @@
     // 0) tin nhắn riêng tư che nút -> dẹp trước
     const dis = dismissInfo();
     if (dis) {
-      if (cfg.mode === 'farm' && /thất\s*bại/i.test(dis.text.normalize('NFC'))) aoeFailed(dis.text);
-      else log('✉ Có tin nhắn riêng tư — bỏ qua', 'ok');
+      const failed = cfg.mode === 'farm' && /thất\s*bại/i.test(dis.text.normalize('NFC'));
+      if (failed && findBtn('Quay Lại Vườn')) {
+        // đang trong 1 ô đất, tưới/bón thất bại -> dẹp tin, đánh dấu để LÀM MỚI rồi bấm lại
+        S.plotRefresh = true;
+        log('✉ Tưới/bón trong ô thất bại — bỏ qua tin, làm mới rồi thử lại.', 'warn');
+      } else if (failed) {
+        aoeFailed(dis.text);                                  // thất bại của AOE cả vườn -> tính cooldown
+      } else {
+        log('✉ Có tin nhắn riêng tư — bỏ qua', 'ok');
+      }
       click(dis.el);
       S.busyUntil = Date.now() + cfg.uiDelay;
       return;
@@ -563,7 +573,7 @@
     const opts = plotOptions();
     if (opts.length) {
       const first = opts.find((o) => /^ô\s*1\b/i.test(o.label)) || opts[0];
-      S.dropdownTries = 0; S.plotClicks = 0;
+      S.dropdownTries = 0; S.plotClicks = 0; S.plotFails = 0; S.plotRefresh = false;
       log(`🌱 Chọn ô đất: ${first.label}`, 'ok');
       click(first.el);
       S.busyUntil = Date.now() + cfg.stepDelay;
@@ -1111,6 +1121,20 @@
       S.plotClicks = 0;
       return leaveGarden(backVuon, 'thoát ô kẹt');
     }
+    // vừa gặp "thất bại" khi tưới/bón trong ô -> làm mới rồi mới thử lại
+    if (S.plotRefresh) {
+      S.plotRefresh = false;
+      if (++S.plotFails > 3) {
+        log('⚠ Ô này tưới/bón thất bại nhiều lần — bỏ qua ô, đi ô kế.', 'warn');
+        S.plotFails = 0; S.plotsHere++; S.plots++; S.plotClicks = 0;
+        const skip = findBtn('Cây Tiếp', btns);
+        if (skip && !skip.disabled) return act(skip, 'bỏ ô lỗi, ô kế');
+        return leaveGarden(backVuon, 'ô cuối lỗi, quay lại vườn');
+      }
+      const rf = findBtn(cfg.refreshBtn, btns);
+      if (rf && !rf.disabled) return act(rf, 'làm mới rồi thử tưới/bón lại');
+      // ô này không có nút Làm Mới -> thử lại thẳng (nút việc vẫn sáng)
+    }
     for (const name of cfg.care) {
       const el = careEl(name);
       if (el && hasEl(el)) continue;                         // việc này để AOE lo, không làm tay từng ô
@@ -1131,7 +1155,7 @@
     // Hết việc ở ô này. Ghi nhận ô có đang chín không rồi mới đi tiếp.
     const hv = findBtn(cfg.plotHarvest, btns);
     const ripe = !!(hv && !hv.disabled);
-    S.plotsHere++; S.plots++; S.plotClicks = 0;
+    S.plotsHere++; S.plots++; S.plotClicks = 0; S.plotFails = 0;
     if (ripe) S.ripeHere++;
 
     const next = findBtn('Cây Tiếp', btns);
@@ -2707,6 +2731,8 @@
       S.sowing = S.sowed = S.sowFail = false; S.gWaits = 0; S.selTries = 0; S.sawTable = false; S.roundWork = 0; S.idleUntil = 0;
       S.stopReason = ''; S.paused = false; S.running = true;
       markRunning(true);
+      keepAwakeAudio();       // giữ tab không bị bóp timer khi chạy nền (cần cử chỉ = cú bấm này)
+      askKeepTab();
       if (cfg.mode === 'water') {
         log(`▶ Bắt đầu CHỈ MÚC NƯỚC — múc xong chờ ${cfg.waterWait}s, ` +
             `chưa hồi thì ${cfg.waterRetry}s làm mới lại.`, 'head');
@@ -2731,6 +2757,7 @@
     } else {
       S.running = false; S.paused = false; S.stopReason = 'bạn bấm dừng';
       markRunning(false);
+      letTabSleep();
       log('⏹ Đã dừng', 'warn');
     }
     paint();
@@ -2810,13 +2837,50 @@
   }
   log('Sẵn sàng. Bấm ⚙ để chọn vườn và linh căn, 🔍 Quét thử để kiểm tra.', 'head');
 
-  // Bản extension: nhờ service worker đặt autoDiscardable=false cho tab này,
-  // để "Trình tiết kiệm bộ nhớ" của Chrome không ngủ tab Discord đang chạy bot.
-  try {
-    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-      chrome.runtime.sendMessage({ type: 'keep-tab-alive' }, () => { void chrome.runtime.lastError; });
-    }
-  } catch (e) { /* userscript không có chrome.runtime */ }
+  // ---------------------------------------------------------------- //
+  //  Giữ tab khỏi bị Chrome ngủ / bóp timer khi chạy nền
+  // ---------------------------------------------------------------- //
+  // Chrome làm 2 việc với tab nền: (1) "xả" tab để tiết kiệm RAM (autoDiscardable),
+  // (2) BÓP timer sau ~5 phút ẩn — kể cả Web Worker. autoDiscardable chỉ chống (1).
+  // Chống (2): giữ tab ở trạng thái "đang phát âm thanh" (âm lượng ~0, không nghe được);
+  // Chrome không bóp timer tab đang phát tiếng.
+  let audioCtx = null, keepAlerted = false;
+  function keepAwakeAudio() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!audioCtx) {
+        audioCtx = new AC();
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        g.gain.value = 0.0015;                 // ~ -56 dB: đủ để Chrome coi là "có tiếng", tai người không nghe
+        osc.frequency.value = 40;              // trầm, loa laptop gần như không phát
+        osc.connect(g).connect(audioCtx.destination);
+        osc.start();
+      }
+      if (audioCtx.state === 'suspended') audioCtx.resume();   // cần cử chỉ người dùng (nút Chạy)
+    } catch (e) { /* trình duyệt chặn thì thôi */ }
+  }
+  function letTabSleep() { try { if (audioCtx && audioCtx.state === 'running') audioCtx.suspend(); } catch (e) { /* */ } }
+
+  // Nhờ service worker (bản extension) đánh dấu tab "đừng xả". Gọi lại định kỳ phòng khi
+  // Chrome đặt lại cờ hoặc service worker vừa ngủ dậy.
+  function askKeepTab() {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return false;
+      chrome.runtime.sendMessage({ type: 'keep-tab-alive' }, (res) => {
+        void chrome.runtime.lastError;
+        if (!keepAlerted) {
+          keepAlerted = true;
+          log(res && res.ok ? '🔌 Đã nhờ Chrome giữ tab Discord không bị xả (autoDiscardable=false).'
+                            : '🔌 Không đặt được autoDiscardable — nếu bot ngưng khi đổi tab, xem mục Chrome ngủ tab trong README.', 'info');
+        }
+      });
+      return true;
+    } catch (e) { return false; }
+  }
+  askKeepTab();
+  setInterval(askKeepTab, 60000);
 
   // Trang vừa tải lại giữa chừng? -> chờ Discord vẽ xong tin nhắn rồi tự chạy tiếp.
   (function autoResume() {
@@ -2834,6 +2898,7 @@
       if (!ready && Date.now() - t0 < 60000) { setTimeout(tryStart, 1500); return; }
       if (!ready) { log('↻ Chờ 60 giây không thấy nút nào của game — không tự chạy. Bấm ▶ Chạy khi sẵn sàng.', 'warn'); return; }
       $('#ag-run').onclick();
+      keepAwakeAudio();
     };
     setTimeout(tryStart, 4000);
   })();
